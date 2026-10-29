@@ -3,6 +3,8 @@ import { fetchSchema, runQuery, formatQuery, QueryError, QueryResult, SchemaTabl
 import SqlEditor from "./components/SqlEditor";
 import ResultsGrid from "./components/ResultsGrid";
 import SchemaSidebar from "./components/SchemaSidebar";
+import AiPanel from "./components/AiPanel";
+import DiffModal from "./components/DiffModal";
 
 export default function App() {
   const [sql, setSql] = useState("SELECT * FROM customers;");
@@ -10,6 +12,10 @@ export default function App() {
   const [error, setError] = useState<QueryError | null>(null);
   const [running, setRunning] = useState(false);
   const [tables, setTables] = useState<SchemaTable[]>([]);
+
+  // Diff Modal State
+  const [diffSuggestion, setDiffSuggestion] = useState<string | null>(null);
+
   const sqlRef = useRef(sql);
   sqlRef.current = sql;
 
@@ -26,7 +32,7 @@ export default function App() {
       setError(error ?? null);
     } catch {
       setResult(null);
-      setError({ message: "Could not reach the backend. Is it running on port 8000?" });
+      setError({ message: "Could not reach the backend at 127.0.0.1:8000." });
     } finally {
       setRunning(false);
     }
@@ -42,11 +48,21 @@ export default function App() {
     }
   }, []);
 
-  // ---- Clear runtime error when the user starts editing ----
+  // ---- User edits SQL in editor ----
   const handleSqlChange = useCallback((newSql: string) => {
     setSql(newSql);
-    setError(null);
+    // Notice: We do NOT immediately clear runtime error here so that the user
+    // can still click "Fix Error" in the AI Assistant if they want guidance on the failure.
   }, []);
+
+  // ---- Accept suggested fix from Diff modal (Rule 3: NEVER auto-runs) ----
+  const handleAcceptFix = useCallback(() => {
+    if (diffSuggestion !== null) {
+      setSql(diffSuggestion);
+      setDiffSuggestion(null);
+      setError(null);
+    }
+  }, [diffSuggestion]);
 
   return (
     <div className="layout">
@@ -90,6 +106,23 @@ export default function App() {
           {!result && !error && <p className="empty">Write a query and press Ctrl+Enter to run it.</p>}
         </div>
       </main>
+
+      {/* AI Assistant Side Panel */}
+      <AiPanel
+        currentSql={sql}
+        lastError={error}
+        onOpenDiff={(fixedSql) => setDiffSuggestion(fixedSql)}
+      />
+
+      {/* Monaco Diff Modal for reviewing AI suggestions */}
+      {diffSuggestion !== null && (
+        <DiffModal
+          original={sql}
+          modified={diffSuggestion}
+          onAccept={handleAcceptFix}
+          onCancel={() => setDiffSuggestion(null)}
+        />
+      )}
     </div>
   );
 }

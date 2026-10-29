@@ -3,3 +3,4 @@ uvicorn[standard]==0.32.*
 psycopg[binary]==3.2.*
 python-dotenv==1.0.*
 sqlglot==25.*
+google-genai==2.33.*
