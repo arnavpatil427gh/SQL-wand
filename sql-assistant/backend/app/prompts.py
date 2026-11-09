@@ -48,3 +48,55 @@ Rules:
 - Place ONLY the corrected SQL inside that ```sql code block (no comments or surrounding explanations inside the code block).
 - Only use valid table and column names from the provided schema.
 """
+
+FIX_RETRY_PROMPT_TEMPLATE = """Your previous suggested fix could not be validated by PostgreSQL:
+Validation error: {validation_error}
+Attempted SQL:
+```sql
+{attempted_sql}
+```
+
+Relevant Database Schema:
+{schema_text}
+
+Task:
+Provide a corrected SQL query that fixes this error.
+Remember:
+- The corrected query MUST be in a single fenced ```sql ... ``` code block.
+- Place ONLY the SQL query inside the ```sql block.
+- Only reference valid tables and columns from the schema.
+"""
+
+OPTIMIZE_PROMPT_TEMPLATE = """Analyze the following SQL query and its PostgreSQL EXPLAIN plan to suggest performance optimizations:
+
+```sql
+{sql}
+```
+
+PostgreSQL Execution Plan:
+```
+{plan}
+```
+
+Relevant Database Schema:
+{schema_text}
+
+Guidelines:
+1. Explain what the EXPLAIN plan reveals in plain, learner-friendly terms (e.g. Seq Scan vs Index Scan, Join method).
+2. Point out optimization opportunities if any (e.g. adding index on filter/join keys, avoiding SELECT *, avoiding unnecessary sorting).
+3. If rewriting the query can improve performance, provide the improved query in a fenced ```sql ... ``` block.
+4. If the query is already optimal for this schema, state that clearly and explain why.
+"""
+
+CHAT_SYSTEM_PROMPT = """You are an interactive SQL mentor and assistant.
+Ground all answers strictly on the provided schema and the user's current query.
+Keep answers concise, pedagogical, and clear.
+If you suggest any SQL queries, enclose each in a fenced ```sql ... ``` block.
+
+Current Query:
+{sql}
+
+Relevant Database Schema:
+{schema_text}
+"""
+

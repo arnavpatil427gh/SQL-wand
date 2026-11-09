@@ -111,6 +111,7 @@ export default function App() {
       <AiPanel
         currentSql={sql}
         lastError={error}
+        schema={tables}
         onOpenDiff={(fixedSql) => setDiffSuggestion(fixedSql)}
       />
 

@@ -28,7 +28,7 @@ export async function runQuery(sql: string): Promise<{ result?: QueryResult; err
     });
     const data = await res.json();
     return res.ok ? { result: data } : { error: data.error };
-  } catch (err) {
+  } catch {
     return {
       error: { message: "Could not reach the backend at 127.0.0.1:8000. Is the server running?" },
     };
@@ -80,21 +80,65 @@ export async function formatQuery(sql: string): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-//  Phase 3 — AI Assistant SSE Stream Helpers
+//  Phase 3 & 4 — AI Assistant SSE Stream Helpers & In-Memory Cache
 // ---------------------------------------------------------------------------
+
+export type ValidationStatus = {
+  validated: boolean;
+  error?: string | null;
+};
 
 export type StreamCallbacks = {
   onChunk: (chunk: string) => void;
+  onToolCall?: (message: string) => void;
+  onValidation?: (status: ValidationStatus) => void;
   onError: (error: string) => void;
   onDone: () => void;
 };
+
+type CachedEntry = {
+  text: string;
+  toolCalls: string[];
+  validation?: ValidationStatus;
+};
+
+// In-memory cache keyed by (endpoint, sql, schema hash)
+const aiCache = new Map<string, CachedEntry>();
+
+export function computeCacheKey(endpoint: string, sql: string, schema: SchemaTable[]): string {
+  const normSql = sql.trim().replace(/\s+/g, " ");
+  const schemaHash = schema
+    .map((t) => `${t.name}:${t.columns.map((c) => c.name).join(",")}`)
+    .sort()
+    .join("|");
+  return `${endpoint}::${normSql}::${schemaHash}`;
+}
 
 async function streamPost(
   url: string,
   body: unknown,
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
+  cacheKey?: string,
 ): Promise<void> {
+  // Check in-memory cache first if key provided
+  if (cacheKey && aiCache.has(cacheKey)) {
+    const cached = aiCache.get(cacheKey)!;
+    for (const tool of cached.toolCalls) {
+      callbacks.onToolCall?.(tool);
+    }
+    if (cached.validation) {
+      callbacks.onValidation?.(cached.validation);
+    }
+    callbacks.onChunk(cached.text);
+    callbacks.onDone();
+    return;
+  }
+
+  let accumulatedText = "";
+  const accumulatedToolCalls: string[] = [];
+  let capturedValidation: ValidationStatus | undefined;
+
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -131,7 +175,6 @@ async function streamPost(
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n\n");
-      // Keep incomplete fragment in buffer
       buffer = lines.pop() || "";
 
       for (const line of lines) {
@@ -144,9 +187,23 @@ async function streamPost(
           const payload = JSON.parse(jsonStr);
           if (payload.error) {
             callbacks.onError(payload.error);
+          } else if (payload.tool_call) {
+            accumulatedToolCalls.push(payload.tool_call);
+            callbacks.onToolCall?.(payload.tool_call);
+          } else if (payload.validation) {
+            capturedValidation = payload.validation;
+            callbacks.onValidation?.(payload.validation);
           } else if (payload.text) {
+            accumulatedText += payload.text;
             callbacks.onChunk(payload.text);
           } else if (payload.done) {
+            if (cacheKey && accumulatedText) {
+              aiCache.set(cacheKey, {
+                text: accumulatedText,
+                toolCalls: accumulatedToolCalls,
+                validation: capturedValidation,
+              });
+            }
             callbacks.onDone();
           }
         } catch (e) {
@@ -158,7 +215,6 @@ async function streamPost(
     callbacks.onDone();
   } catch (err: unknown) {
     if ((err as Error)?.name === "AbortError") {
-      // User aborted stream
       callbacks.onDone();
       return;
     }
@@ -169,10 +225,24 @@ async function streamPost(
 
 export function streamAiExplain(
   sql: string,
+  allowSampling: boolean,
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
+  schema: SchemaTable[] = [],
 ): Promise<void> {
-  return streamPost("/api/ai/explain", { sql }, callbacks, signal);
+  const cacheKey = schema.length > 0 ? computeCacheKey("explain", sql, schema) : undefined;
+  return streamPost("/api/ai/explain", { sql, allow_sampling: allowSampling }, callbacks, signal, cacheKey);
+}
+
+export function streamAiOptimize(
+  sql: string,
+  allowSampling: boolean,
+  callbacks: StreamCallbacks,
+  signal?: AbortSignal,
+  schema: SchemaTable[] = [],
+): Promise<void> {
+  const cacheKey = schema.length > 0 ? computeCacheKey("optimize", sql, schema) : undefined;
+  return streamPost("/api/ai/optimize", { sql, allow_sampling: allowSampling }, callbacks, signal, cacheKey);
 }
 
 export function streamAiFix(
@@ -181,9 +251,22 @@ export function streamAiFix(
     error_message: string;
     error_position?: number | null;
     error_hint?: string | null;
+    allow_sampling?: boolean;
   },
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
 ): Promise<void> {
   return streamPost("/api/ai/fix", params, callbacks, signal);
+}
+
+export function streamAiChat(
+  params: {
+    sql: string;
+    messages: { role: string; content: string }[];
+    allow_sampling?: boolean;
+  },
+  callbacks: StreamCallbacks,
+  signal?: AbortSignal,
+): Promise<void> {
+  return streamPost("/api/ai/chat", params, callbacks, signal);
 }
